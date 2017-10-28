@@ -15,7 +15,7 @@
 -export([cast/2]).
 -export([reply/2]).
 
-%% TODO: option
+-export_type([start_option/0, start_options/0]).
 
 %%------------------------------------------------------------------------------
 %% 'gen_serer' Callback API
@@ -37,46 +37,40 @@
         }).
 
 %%------------------------------------------------------------------------------
+%% Exported Types
+%%------------------------------------------------------------------------------
+-type start_options() :: [start_option()].
+
+-type start_option() :: {span, passage:maybe_span()}
+                      | {trace_process_lifecycle, passage:start_span_options()}
+                      | (GenServerOption :: term()).
+
+%%------------------------------------------------------------------------------
 %% Exported Functions
 %%------------------------------------------------------------------------------
-%% TODO: move
-%% -spec init_spans(term()) -> {passage:maybe_span(), passage:maybe_span()}.
-init_spans(Name, Module, Options) ->
-    Span = proplists:get_value(span, Options, passage_pd:current_span()),
-    case lists:keyfind(trace_process_lifecycle, 1, Options) of
-        false                 -> {undefined, Span};
-        {_, StartSpanOptions} ->
-            ProcessSpan0 = passage:start_span(process_lifecycle, StartSpanOptions),
-            ProcessSpan1 =
-                passage:set_tags(
-                  ProcessSpan0,
-                  #{?TAG_COMPONENT => gen_server,
-                    process_name => Name,
-                    node => node(),
-                    application => get_application(Module),
-                    module => Module}),
-            {ProcessSpan1, Span}
-    end.
-
 -spec start(module(), term(), list()) -> term().
-start(Module, Args, Options) ->
-    {ProcessSpan, Span} = init_spans(undefined, Module, Options),
-    gen_server:start(?MODULE, {ProcessSpan, Span, Module, Args}, Options).
+start(Module, Args, Options0) ->
+    {ProcessSpan, Span, Options1} =
+        init_spans(undefined, Module, Options0, {undefined, undefined, []}),
+    gen_server:start(?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
 
 -spec start(term(), module(), term(), list()) -> term().
-start(ServerName, Module, Args, Options) ->
-    {ProcessSpan, Span} = init_spans(ServerName, Module, Options),
-    gen_server:start(ServerName, ?MODULE, {ProcessSpan, Span, Module, Args}, Options).
+start(ServerName, Module, Args, Options0) ->
+    {ProcessSpan, Span, Options1} =
+        init_spans(ServerName, Module, Options0, {undefined, undefined, []}),
+    gen_server:start(ServerName, ?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
 
 -spec start_link(module(), term(), list()) -> term().
-start_link(Module, Args, Options) ->
-    {ProcessSpan, Span} = init_spans(undefined, Module, Options),
-    gen_server:start_link(?MODULE, {ProcessSpan, Span, Module, Args}, Options).
+start_link(Module, Args, Options0) ->
+    {ProcessSpan, Span, Options1} =
+        init_spans(undefined, Module, Options0, {undefined, undefined, []}),
+    gen_server:start_link(?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
 
--spec start_link(term(), module(), term(), list()) -> term().
-start_link(ServerName, Module, Args, Options) ->
-    {ProcessSpan, Span} = init_spans(ServerName, Module, Options),
-    gen_server:start_link(ServerName, ?MODULE, {ProcessSpan, Span, Module, Args}, Options).
+-spec start_link(term(), module(), term(), start_options()) -> term().
+start_link(ServerName, Module, Args, Options0) ->
+    {ProcessSpan, Span, Options1} =
+        init_spans(ServerName, Module, Options0, {undefined, undefined, []}),
+    gen_server:start_link(ServerName, ?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
 
 -spec stop(term()) -> ok.
 stop(ServerRef) ->
@@ -114,6 +108,7 @@ init({ProcessSpan0, undefined, Module, Args}) ->
     passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
 
     App = get_application(Module),
+    %% TODO: strip
     Context = #?CONTEXT{span = ProcessSpan1, application = App, module = Module},
     do_init(Args, Context);
 init({ProcessSpan0, Span, Module, Args}) ->
@@ -284,3 +279,24 @@ do_code_change(OldVsn, Context = #?CONTEXT{module = Module, state = State0}, Ext
         {ok, State1}    -> {ok, Context#?CONTEXT{state = State1}};
         {error, Reason} -> {error, Reason}
     end.
+
+-spec init_spans(term(), module(), start_options(), Acc) -> Result when
+      Acc    :: {passage:maybe_span(), passage:maybe_span(), list()},
+      Result :: Acc.
+init_spans(_, _, [], Acc) ->
+    Acc;
+init_spans(Name, Module, [{span, Span} | Options], Acc) ->
+    init_spans(Name, Module, Options, setelement(2, Acc, Span));
+init_spans(Name, Module, [{trace_process_lifecycle, StartSpanOptions} | Options], Acc) ->
+    ProcessSpan0 = passage:start_span(trace_process_lifecycle, StartSpanOptions),
+    ProcessSpan1 =
+        passage:set_tags(
+          ProcessSpan0,
+          #{?TAG_COMPONENT => gen_server,
+            process_name => Name,
+            node => node(),
+            application => get_application(Module),
+            module => Module}),
+    init_spans(Name, Module, Options, setelement(1, Acc, ProcessSpan1));
+init_spans(Name, Module, [O | Options], Acc = {_, _, Os}) ->
+    init_spans(Name, Module, Options, setelement(3, Acc, [O | Os])).
