@@ -14,11 +14,13 @@
 -export([call/2, call/3]).
 -export([cast/2]).
 -export([reply/2]).
+-export([process_span/0]).
+-export([with_process_span/1]).
 
 -export_type([start_option/0, start_options/0]).
 
 %%------------------------------------------------------------------------------
-%% 'gen_serer' Callback API
+%% 'gen_server' Callback API
 %%------------------------------------------------------------------------------
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 -export([terminate/2, code_change/3, format_status/2]).
@@ -26,11 +28,12 @@
 %%------------------------------------------------------------------------------
 %% Macros & Records
 %%------------------------------------------------------------------------------
+-define(PROCESS_SPAN_KEY, gen_server_passage_process_span).
+
 -define(CONTEXT, ?MODULE).
 
 -record(?CONTEXT,
         {
-          span        :: passage:maybe_span(),
           application :: atom(),
           module      :: module(),
           state       :: term()
@@ -99,28 +102,38 @@ cast(Name, Request) ->
 reply(Client, Reply) ->
     gen_server:reply(Client, Reply).
 
+-spec process_span() -> passage:maybe_span().
+process_span() ->
+    get(?PROCESS_SPAN_KEY).
+
+-spec with_process_span(Fun) -> Result when
+      Fun    :: fun (() -> Result),
+      Result :: term().
+with_process_span(Fun) ->
+    passage_pd:with_parent_span(process_span(), Fun).
+
 %%------------------------------------------------------------------------------
-%% 'gen_serer' Callback Functions
+%% 'gen_server' Callback Functions
 %%------------------------------------------------------------------------------
 %% @private
 init({ProcessSpan0, undefined, Module, Args}) ->
     ProcessSpan1 = passage:set_tags(ProcessSpan0, #{pid => self()}),
     passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
+    save_process_span(ProcessSpan1),
 
     App = get_application(Module),
-    %% TODO: strip
-    Context = #?CONTEXT{span = ProcessSpan1, application = App, module = Module},
+    Context = #?CONTEXT{application = App, module = Module},
     do_init(Args, Context);
 init({ProcessSpan0, Span, Module, Args}) ->
     ProcessSpan1 = passage:set_tags(ProcessSpan0, #{pid => self()}),
     passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
+    save_process_span(ProcessSpan1),
 
     App = get_application(Module),
-    Context = #?CONTEXT{span = ProcessSpan1, application = App, module = Module},
+    Context = #?CONTEXT{application = App, module = Module},
     passage_pd:with_span(
       'gen_server_passage:init/1',
-      [{child_of, Span}, {child_of, Context#?CONTEXT.span},
-       {tags, tags(Context)}, error_if_exception],
+      [{child_of, Span}, {tags, tags(Context)}, error_if_exception],
       fun () ->
               Result = do_init(Args, Context),
               case Result of
@@ -147,8 +160,7 @@ handle_call({undefined, Request}, From, Context) ->
 handle_call({Span, Request}, From, Context) ->
     passage_pd:with_span(
       'gen_server_passage:handle_call/3',
-      [{child_of, Span}, {child_of, Context#?CONTEXT.span},
-       {tags, tags(Context)}, error_if_exception],
+      [{child_of, Span}, {tags, tags(Context)}, error_if_exception],
       fun () ->
               Result = do_handle_call(Request, From, Context),
               case Result of
@@ -165,8 +177,7 @@ handle_cast({undefined, Request}, Context) ->
 handle_cast({Span, Request}, Context) ->
     passage_pd:with_span(
       'gen_server_passage:handle_cast/2',
-      [{follows_from, Span}, {child_of, Context#?CONTEXT.span},
-       {tags, tags(Context)}, error_if_exception],
+      [{follows_from, Span}, {tags, tags(Context)}, error_if_exception],
       fun () ->
               Result = do_handle_cast(Request, Context),
               case Result of
@@ -194,7 +205,7 @@ terminate(Reason, Context) ->
 code_change(OldVsn, Context, Extra) ->
     passage_pd:with_span(
       'gen_server_passage:code_change/3',
-      [{child_of, Context#?CONTEXT.span}, {tags, tags(Context)}, error_if_exception],
+      [{child_of, process_span()}, {tags, tags(Context)}, error_if_exception],
       fun () ->
               do_code_change(OldVsn, Context, Extra)
       end).
@@ -300,3 +311,8 @@ init_spans(Name, Module, [{trace_process_lifecycle, StartSpanOptions} | Options]
     init_spans(Name, Module, Options, setelement(1, Acc, ProcessSpan1));
 init_spans(Name, Module, [O | Options], Acc = {_, _, Os}) ->
     init_spans(Name, Module, Options, setelement(3, Acc, [O | Os])).
+
+-spec save_process_span(passage:maybe_span()) -> ok.
+save_process_span(Span) ->
+    put(?PROCESS_SPAN_KEY, passage:strip_span(Span)),
+    ok.

@@ -1,7 +1,7 @@
 %% @copyright 2017 Takeru Ohta <phjgt308@gmail.com>
 %%
 %% ```
-%% > jaeger_passage:start_tracer(default_tracer, passage_sampler_all:new()).
+%% > jaeger_passage:start_tracer(example_tracer, passage_sampler_all:new()).
 %% ok
 %%
 %% > gen_server_passage_example:start_link().
@@ -53,7 +53,8 @@ init([]) ->
 
 %% @private
 handle_call(ping, _From, State) ->
-    {reply, pong, State}.
+    Pong = gen_server_passage:with_process_span(fun() -> handle_ping() end),
+    {reply, Pong, State}.
 
 %% @private
 handle_cast(_Request, State) ->
@@ -70,3 +71,11 @@ terminate(_Reason, _State) ->
 %% @private
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+%%------------------------------------------------------------------------------
+%% Internal Functions
+%%------------------------------------------------------------------------------
+-passage_trace([]).
+-spec handle_ping() -> pong.
+handle_ping() ->
+    pong.

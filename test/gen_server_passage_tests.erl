@@ -15,7 +15,7 @@ basic_test() ->
     unlink(Pid),
 
     pong = gen_server_passage_example:ping(),
-    ?assertMatch([_, _], finished_spans()),
+    ?assertMatch([_, _, _], finished_spans()),
 
     exit(Pid, kill),
     monitor(process, Pid),
