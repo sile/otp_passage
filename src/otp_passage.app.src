@@ -1,5 +1,5 @@
 {application, otp_passage,
- [{description, "An OTP library"},
+ [{description, "OpenTracing instrumentation library for the Erlang/OTP behaviours"},
   {vsn, "0.1.0"},
   {registered, []},
   {applications,
@@ -9,8 +9,7 @@
    ]},
   {env,[]},
   {modules, []},
-
-  {maintainers, []},
-  {licenses, ["MIT"]},
-  {links, []}
+  {maintainers,["Takeru Ohta"]},
+  {licenses,["MIT"]},
+  {links,[{"GitHub","https://github.com/sile/passage"}]}
  ]}.
