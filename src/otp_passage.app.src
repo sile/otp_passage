@@ -11,5 +11,5 @@
   {modules, []},
   {maintainers,["Takeru Ohta"]},
   {licenses,["MIT"]},
-  {links,[{"GitHub","https://github.com/sile/passage"}]}
+  {links,[{"GitHub","https://github.com/sile/otp_passage"}]}
  ]}.
