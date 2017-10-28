@@ -1,0 +1,6 @@
+{"1.1.0",
+[{<<"passage">>,{pkg,<<"passage">>,<<"0.1.3">>},0}]}.
+[
+{pkg_hash,[
+ {<<"passage">>, <<"AD09BDD1F270D412430BB3443AFBE7DCA057DA0BD4F04DE613E24FC13093F171">>}]}
+].
