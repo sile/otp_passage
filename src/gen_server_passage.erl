@@ -8,9 +8,14 @@
 %%------------------------------------------------------------------------------
 %% Exported API
 %%------------------------------------------------------------------------------
+-export([start/3, start/4]).
 -export([start_link/3, start_link/4]).
+-export([stop/1, stop/3]).
 -export([call/2, call/3]).
 -export([cast/2]).
+-export([reply/2]).
+
+%% TODO: option
 
 %%------------------------------------------------------------------------------
 %% 'gen_serer' Callback API
@@ -25,7 +30,7 @@
 
 -record(?CONTEXT,
         {
-          %% TODO(?): Add `span` field
+          span        :: passage:maybe_span(),
           application :: atom(),
           module      :: module(),
           state       :: term()
@@ -34,15 +39,52 @@
 %%------------------------------------------------------------------------------
 %% Exported Functions
 %%------------------------------------------------------------------------------
+%% TODO: move
+%% -spec init_spans(term()) -> {passage:maybe_span(), passage:maybe_span()}.
+init_spans(Name, Module, Options) ->
+    Span = proplists:get_value(span, Options, passage_pd:current_span()),
+    case lists:keyfind(trace_process_lifecycle, 1, Options) of
+        false                 -> {undefined, Span};
+        {_, StartSpanOptions} ->
+            ProcessSpan0 = passage:start_span(process_lifecycle, StartSpanOptions),
+            ProcessSpan1 =
+                passage:set_tags(
+                  ProcessSpan0,
+                  #{?TAG_COMPONENT => gen_server,
+                    process_name => Name,
+                    node => node(),
+                    application => get_application(Module),
+                    module => Module}),
+            {ProcessSpan1, Span}
+    end.
+
+-spec start(module(), term(), list()) -> term().
+start(Module, Args, Options) ->
+    {ProcessSpan, Span} = init_spans(undefined, Module, Options),
+    gen_server:start(?MODULE, {ProcessSpan, Span, Module, Args}, Options).
+
+-spec start(term(), module(), term(), list()) -> term().
+start(ServerName, Module, Args, Options) ->
+    {ProcessSpan, Span} = init_spans(ServerName, Module, Options),
+    gen_server:start(ServerName, ?MODULE, {ProcessSpan, Span, Module, Args}, Options).
+
 -spec start_link(module(), term(), list()) -> term().
 start_link(Module, Args, Options) ->
-    Span = proplists:get_value(span, Options, passage_pd:current_span()),
-    gen_server:start_link(?MODULE, {Span, Module, Args}, Options).
+    {ProcessSpan, Span} = init_spans(undefined, Module, Options),
+    gen_server:start_link(?MODULE, {ProcessSpan, Span, Module, Args}, Options).
 
 -spec start_link(term(), module(), term(), list()) -> term().
 start_link(ServerName, Module, Args, Options) ->
-    Span = proplists:get_value(span, Options, passage_pd:current_span()),
-    gen_server:start_link(ServerName, ?MODULE, {Span, Module, Args}, Options).
+    {ProcessSpan, Span} = init_spans(ServerName, Module, Options),
+    gen_server:start_link(ServerName, ?MODULE, {ProcessSpan, Span, Module, Args}, Options).
+
+-spec stop(term()) -> ok.
+stop(ServerRef) ->
+    gen_server:stop(ServerRef).
+
+-spec stop(term(), term(), timeout()) -> ok.
+stop(ServerRef, Reason, Timeout) ->
+    gen_server:stop(ServerRef, Reason, Timeout).
 
 %% @equiv Call(Name, Request, 5000)
 -spec call(term(), term()) -> term().
@@ -59,87 +101,114 @@ cast(Name, Request) ->
     Span = passage_pd:current_span(),
     gen_server:cast(Name, {Span, Request}).
 
+-spec reply(term(), term()) -> term().
+reply(Client, Reply) ->
+    gen_server:reply(Client, Reply).
+
 %%------------------------------------------------------------------------------
 %% 'gen_serer' Callback Functions
 %%------------------------------------------------------------------------------
 %% @private
-init({undefined, Module, Args}) ->
+init({ProcessSpan0, undefined, Module, Args}) ->
+    ProcessSpan1 = passage:set_tags(ProcessSpan0, #{pid => self()}),
+    passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
+
     App = get_application(Module),
-    do_init(App, Module, Args);
-init({Span, Module, Args}) ->
-    try
-        App = get_application(Module),
-        passage_pd:start_span(
-          'gen_server_passage:init/1',
-          [{child_of, Span},
-           {tags, #{?TAG_COMPONENT => gen_server, % TODO
-                    pid => self(),
-                    application => App,
-                    module => Module}}]),
-        Result = do_init(App, Module, Args),
-        case Result of
-            ignore         -> passage_pd:set_tags(#{ignore => true});
-            {stop, Reason} ->
-                %% TODO: filter `normal', `shutown', `{shutdown, _}'
-                passage_pd:log(#{?LOG_FIELD_MESSAGE => Reason}, [error]);
-            _              -> ok
-        end,
-        Result
-    catch
-        Class:ExReason ->
-            %% TODO: move to `passage` (passage:with_span(.., [error_if_exception], ..))
-            Stack = erlang:get_stacktrace(),
-            passage_pd:log(#{?LOG_FIELD_ERROR_KIND => Class,
-                             ?LOG_FIELD_ERROR_KIND => ExReason,
-                             ?LOG_FIELD_STACK => Stack},
-                           [error]),
-            erlang:raise(Class, ExReason, Stack)
-    after
-        passage_pd:finish_span()
-    end.
+    Context = #?CONTEXT{span = ProcessSpan1, application = App, module = Module},
+    do_init(Args, Context);
+init({ProcessSpan0, Span, Module, Args}) ->
+    ProcessSpan1 = passage:set_tags(ProcessSpan0, #{pid => self()}),
+    passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
+
+    App = get_application(Module),
+    Context = #?CONTEXT{span = ProcessSpan1, application = App, module = Module},
+    passage_pd:with_span(
+      'gen_server_passage:init/1',
+      [{child_of, Span}, {child_of, Context#?CONTEXT.span},
+       {tags, tags(Context)}, error_if_exception],
+      fun () ->
+              Result = do_init(Args, Context),
+              case Result of
+                  ignore         -> passage_pd:log(#{?LOG_FIELD_EVENT => ignore});
+                  {stop, Reason} -> handle_stop(Reason);
+                  _              -> ok
+              end,
+              Result
+      end).
+
+-spec handle_stop(term()) -> ok.
+handle_stop(normal) ->
+    passage_pd:log(#{?LOG_FIELD_EVENT => stop, ?LOG_FIELD_MESSAGE => normal});
+handle_stop(shutdown) ->
+    passage_pd:log(#{?LOG_FIELD_EVENT => stop, ?LOG_FIELD_MESSAGE => shutdown});
+handle_stop({shutdown, Reason}) ->
+    passage_pd:log(#{?LOG_FIELD_EVENT => stop, ?LOG_FIELD_MESSAGE => {shutdown, Reason}});
+handle_stop(Error) ->
+    passage_pd:log(#{?LOG_FIELD_MESSAGE => Error}, [error]).
 
 %% @private
 handle_call({undefined, Request}, From, Context) ->
     do_handle_call(Request, From, Context);
 handle_call({Span, Request}, From, Context) ->
-    try
-        passage_pd:start_span(
-          'gen_server_passage:handle_call/3',
-          [{child_of, Span}, {tags, tags(Context)}]),
-        do_handle_call(Request, From, Context)
-    catch
-        Class:ExReason ->
-            %% TODO: move to `passage` (passage:with_span(.., [error_if_exception], ..))
-            Stack = erlang:get_stacktrace(),
-            passage_pd:log(#{?LOG_FIELD_ERROR_KIND => Class,
-                             ?LOG_FIELD_ERROR_KIND => ExReason,
-                             ?LOG_FIELD_STACK => Stack},
-                           [error]),
-            erlang:raise(Class, ExReason, Stack)
-    after
-        passage_pd:finish_span()
+    passage_pd:with_span(
+      'gen_server_passage:handle_call/3',
+      [{child_of, Span}, {child_of, Context#?CONTEXT.span},
+       {tags, tags(Context)}, error_if_exception],
+      fun () ->
+              Result = do_handle_call(Request, From, Context),
+              case Result of
+                  {stop, Reason, _}    -> handle_stop(Reason);
+                  {stop, _, Reason, _} -> handle_stop(Reason);
+                  _                    -> ok
+              end,
+              Result
+      end).
+
+%% @private
+handle_cast({undefined, Request}, Context) ->
+    do_handle_cast(Request, Context);
+handle_cast({Span, Request}, Context) ->
+    passage_pd:with_span(
+      'gen_server_passage:handle_cast/2',
+      [{follows_from, Span}, {child_of, Context#?CONTEXT.span},
+       {tags, tags(Context)}, error_if_exception],
+      fun () ->
+              Result = do_handle_cast(Request, Context),
+              case Result of
+                  {stop, Reason, _} -> handle_stop(Reason);
+                  _                 -> ok
+              end,
+              Result
+      end).
+
+%% @private
+handle_info(Info, Context) ->
+    case erlang:function_exported(Context#?CONTEXT.module, handle_info, 2) of
+        false -> {noreply, Context};
+        true  -> do_handle_info(Info, Context)
     end.
 
 %% @private
-handle_cast({undefined, Request}, ontext) ->
-    do_handle_cast(Request, Context);
-handle_cast({Span, Request}, Context) ->
-    try
-        passage_pd:start_span(
-          'gen_server_passage:handle_cast/2',
-          [{follows_from, Span}, {tags, tags(Context)}]),
-        do_handle_cast(Request, From, Context)
-    catch
-        Class:ExReason ->
-            %% TODO: move to `passage` (passage:with_span(.., [error_if_exception], ..))
-            Stack = erlang:get_stacktrace(),
-            passage_pd:log(#{?LOG_FIELD_ERROR_KIND => Class,
-                             ?LOG_FIELD_ERROR_KIND => ExReason,
-                             ?LOG_FIELD_STACK => Stack},
-                           [error]),
-            erlang:raise(Class, ExReason, Stack)
-    after
-        passage_pd:finish_span()
+terminate(Reason, Context) ->
+    case erlang:function_exported(Context#?CONTEXT.module, terminate, 2) of
+        false -> ok;
+        true  -> do_terminate(Reason, Context)
+    end.
+
+%% @private
+code_change(OldVsn, Context, Extra) ->
+    passage_pd:with_span(
+      'gen_server_passage:code_change/3',
+      [{child_of, Context#?CONTEXT.span}, {tags, tags(Context)}, error_if_exception],
+      fun () ->
+              do_code_change(OldVsn, Context, Extra)
+      end).
+
+%% @private
+format_status(Opt, [PDict, #?CONTEXT{module = Module, state = State}]) ->
+    case erlang:function_exported(Module, format_status, 2) of
+        false -> State;
+        true  -> Module:format_status(Opt, [PDict, State])
     end.
 
 %%------------------------------------------------------------------------------
@@ -148,6 +217,7 @@ handle_cast({Span, Request}, Context) ->
 -spec tags(#?CONTEXT{}) -> passage:tags().
 tags(#?CONTEXT{application = App, module = Module}) ->
     #{?TAG_COMPONENT => gen_server,
+      node => node(),
       pid => self(),
       application => App,
       module => Module}.
@@ -159,13 +229,13 @@ get_application(Module) ->
         {ok, App} -> App
     end.
 
--spec do_init(atom(), module(), term()) -> term().
-do_init(App, Module, Args) ->
+-spec do_init(term(), #?CONTEXT{}) -> term().
+do_init(Args, Context = #?CONTEXT{module = Module}) ->
     case Module:init(Args) of
         {ok, State} ->
-            {ok, #?CONTEXT{application = App, module = Module, state = State}};
+            {ok, Context#?CONTEXT{state = State}};
         {ok, State, Ext} ->
-            {ok, #?CONTEXT{application = App, module = Module, state = State}, Ext};
+            {ok, Context#?CONTEXT{state = State}, Ext};
         Other ->
             Other
     end.
@@ -183,7 +253,7 @@ do_handle_call(Request, From, Context0 = #?CONTEXT{module = Module, state = Stat
     setelement(StateIndex, Result, Context1).
 
 -spec do_handle_cast(term(), #?CONTEXT{}) -> term().
-do_handle_call(Request, Context0 = #?CONTEXT{module = Module, state = State0}) ->
+do_handle_cast(Request, Context0 = #?CONTEXT{module = Module, state = State0}) ->
     Result = Module:handle_cast(Request, State0),
     StateIndex =
         case element(1, Result) of
@@ -192,3 +262,25 @@ do_handle_call(Request, Context0 = #?CONTEXT{module = Module, state = State0}) -
         end,
     Context1 = Context0#?CONTEXT{state = element(StateIndex, Result)},
     setelement(StateIndex, Result, Context1).
+
+-spec do_handle_info(term(), #?CONTEXT{}) -> term().
+do_handle_info(Info, Context0 = #?CONTEXT{module = Module, state = State0}) ->
+    Result = Module:handle_ifo(Info, State0),
+    StateIndex =
+        case element(1, Result) of
+            noreply -> 2;
+            stop    -> 3
+        end,
+    Context1 = Context0#?CONTEXT{state = element(StateIndex, Result)},
+    setelement(StateIndex, Result, Context1).
+
+-spec do_terminate(term(), #?CONTEXT{}) -> term().
+do_terminate(Reason, #?CONTEXT{module = Module, state = State}) ->
+    Module:terminate(Reason, State).
+
+-spec do_code_change(term(), #?CONTEXT{}, term()) -> term().
+do_code_change(OldVsn, Context = #?CONTEXT{module = Module, state = State0}, Extra) ->
+    case Module:code_change(OldVsn, State0, Extra) of
+        {ok, State1}    -> {ok, Context#?CONTEXT{state = State1}};
+        {error, Reason} -> {error, Reason}
+    end.
