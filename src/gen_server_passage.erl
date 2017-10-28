@@ -1,4 +1,8 @@
 %% @copyright 2017 Takeru Ohta <phjgt308@gmail.com>
+%%
+%% @doc `gen_server' wrapper module for providing tracing facility.
+%%
+%% The tracing facility is based on <a href="https://github.com/sile/passage">passage</a>.
 -module(gen_server_passage).
 
 -behaviour(gen_server).
@@ -18,6 +22,9 @@
 -export([with_process_span/1]).
 
 -export_type([start_option/0, start_options/0]).
+-export_type([start_result/0]).
+-export_type([server_name/0]).
+-export_type([server_ref/0]).
 
 %%------------------------------------------------------------------------------
 %% 'gen_server' Callback API
@@ -46,66 +53,118 @@
 
 -type start_option() :: {span, passage:maybe_span()}
                       | {trace_process_lifecycle, passage:start_span_options()}
-                      | (GenServerOption :: term()).
+                      | (GenServerOptions :: term()).
+%% <ul>
+%%   <li>`span': The parent span that starting this process. The default value is `passage_pb:current_span()'.</li>
+%%   <li>`trace_process_lifecycle': If this option is specified, the started process has a span including from the start of the process to the end of it. The span can be retrieved from the running process by calling {@link process_span/0}.</li>
+%% </ul>
+%%
+%% `GenServerOptions' are options handled by the `gen_server' functions
+%% (e.g., <a href="http://erlang.org/doc/man/gen_server.html#start_link-3">gen_server:start_link/3</a>).
+
+-type start_result() :: {ok, pid()}
+                      | ignore
+                      | {error, {already_started, pid()} | term()}.
+%% The result of a process startup.
+%%
+%% See the documentation of <a href="http://erlang.org/doc/man/gen_server.html">gen_server</a> module for more details.
+
+-type server_name() :: {local, atom()}
+                     | {global, term()}
+                     | {via, module(), term()}.
+%% The name of a `gen_server' process.
+%%
+%% See the documentation of <a href="http://erlang.org/doc/man/gen_server.html">gen_server</a> module for more details.
+
+-type server_ref() :: pid()
+                    | atom()
+                    | {atom(), node()}
+                    | {global, term()}
+                    | {via, module(), term()}.
+%% A reference to a `gen_server' process.
+%%
+%% See the documentation of <a href="http://erlang.org/doc/man/gen_server.html">gen_server</a> module for more details.
 
 %%------------------------------------------------------------------------------
 %% Exported Functions
 %%------------------------------------------------------------------------------
--spec start(module(), term(), list()) -> term().
+
+%% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start-3">gen_server:start/3</a>.
+-spec start(module(), term(), start_options()) -> start_result().
 start(Module, Args, Options0) ->
     {ProcessSpan, Span, Options1} =
         init_spans(undefined, Module, Options0, {undefined, undefined, []}),
     gen_server:start(?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
 
--spec start(term(), module(), term(), list()) -> term().
+%% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start-4">gen_server:start/4</a>.
+-spec start(server_name(), module(), term(), start_options()) -> start_result().
 start(ServerName, Module, Args, Options0) ->
     {ProcessSpan, Span, Options1} =
         init_spans(ServerName, Module, Options0, {undefined, undefined, []}),
     gen_server:start(ServerName, ?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
 
--spec start_link(module(), term(), list()) -> term().
+%% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start_link-3">gen_server:start_link/3</a>.
+-spec start_link(module(), term(), start_options()) -> start_result().
 start_link(Module, Args, Options0) ->
     {ProcessSpan, Span, Options1} =
         init_spans(undefined, Module, Options0, {undefined, undefined, []}),
     gen_server:start_link(?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
 
--spec start_link(term(), module(), term(), start_options()) -> term().
+%% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start_link-4">gen_server:start_link/4</a>.
+-spec start_link(server_name(), module(), term(), start_options()) -> start_result().
 start_link(ServerName, Module, Args, Options0) ->
     {ProcessSpan, Span, Options1} =
         init_spans(ServerName, Module, Options0, {undefined, undefined, []}),
     gen_server:start_link(ServerName, ?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
 
--spec stop(term()) -> ok.
+%% @equiv gen_server:stop/1
+-spec stop(server_ref()) -> ok.
 stop(ServerRef) ->
     gen_server:stop(ServerRef).
 
--spec stop(term(), term(), timeout()) -> ok.
+%% @equiv gen_server:stop/3
+-spec stop(server_ref(), term(), timeout()) -> ok.
 stop(ServerRef, Reason, Timeout) ->
     gen_server:stop(ServerRef, Reason, Timeout).
 
 %% @equiv Call(Name, Request, 5000)
--spec call(term(), term()) -> term().
-call(Name, Request) ->
-    call(Name, Request, 5000).
+-spec call(server_ref(), term()) -> Reply :: term().
+call(ServerRef, Request) ->
+    call(ServerRef, Request, 5000).
 
--spec call(term(), term(), non_neg_integer()) -> term().
-call(Name, Request, Timeout) ->
+%% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#call-3">gen_server:call/3</a>.
+%%
+%% This piggybacks the current span which retrieved by {@link passage_pd:current_span/1} when sending `Request' to `ServerRef'.
+%% The span will be handled by `{@module}:handle_call/3' transparently for the `gen_server' implementation module.
+-spec call(server_ref(), term(), timeout()) -> Reply :: term().
+call(ServerRef, Request, Timeout) ->
     Span = passage_pd:current_span(),
-    gen_server:call(Name, {Span, Request}, Timeout).
+    gen_server:call(ServerRef, {Span, Request}, Timeout).
 
--spec cast(term(), term()) -> ok.
-cast(Name, Request) ->
+%% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#cast-2">gen_server:cast/2</a>.
+%%
+%% This piggybacks the current span which retrieved by {@link passage_pd:current_span/1} when sending `Request' to `ServerRef'.
+%% The span will be handled by `{@module}:handle_cast/2' transparently for the `gen_server' implementation module.
+-spec cast(server_ref(), term()) -> ok.
+cast(ServerRef, Request) ->
     Span = passage_pd:current_span(),
-    gen_server:cast(Name, {Span, Request}).
+    gen_server:cast(ServerRef, {Span, Request}).
 
+%% @equiv gen_server:reply/2
 -spec reply(term(), term()) -> term().
 reply(Client, Reply) ->
     gen_server:reply(Client, Reply).
 
+%% @doc Returns the process scope span.
+%%
+%% See also: `trace_process_lifecycle' option of {@type start_option()}.
 -spec process_span() -> passage:maybe_span().
 process_span() ->
     get(?PROCESS_SPAN_KEY).
 
+%% @doc Executes `Fun' within the process scope span.
+%%
+%% See also: `trace_process_lifecycle' option of {@type start_option()}.
 -spec with_process_span(Fun) -> Result when
       Fun    :: fun (() -> Result),
       Result :: term().
