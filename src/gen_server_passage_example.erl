@@ -37,7 +37,8 @@
 start_link() ->
     gen_server_passage:start_link(
       {local, ?MODULE}, ?MODULE, [],
-      [{trace_process_lifecycle, [{tracer, example_tracer}]}]).
+      [{inspect, true},
+       {trace_process_lifecycle, [{tracer, example_tracer}]}]).
 
 -passage_trace([{tracer, example_tracer}]).
 -spec ping() -> pong.

@@ -41,9 +41,9 @@
 
 -record(?CONTEXT,
         {
-          application :: atom(),
-          module      :: module(),
-          state       :: term()
+          module          :: module(),
+          state           :: term(),
+          inspect = false :: boolean()
         }).
 
 %%------------------------------------------------------------------------------
@@ -53,10 +53,12 @@
 
 -type start_option() :: {span, passage:maybe_span()}
                       | {trace_process_lifecycle, passage:start_span_options()}
+                      | {inspect, boolean()}
                       | (GenServerOptions :: term()).
 %% <ul>
 %%   <li>`span': The parent span that starting this process. The default value is `passage_pb:current_span()'.</li>
 %%   <li>`trace_process_lifecycle': If this option is specified, the started process has a span including from the start of the process to the end of it. The span can be retrieved from the running process by calling {@link process_span/0}.</li>
+%%   <li>`insepct': If `true', spans for {@link init/1}, {@link handle_call/3} and {@link handle_cast/2} are inserted. The default value is `false'.</li>
 %% </ul>
 %%
 %% `GenServerOptions' are options handled by the `gen_server' functions
@@ -92,30 +94,30 @@
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start-3">gen_server:start/3</a>.
 -spec start(module(), term(), start_options()) -> start_result().
 start(Module, Args, Options0) ->
-    {ProcessSpan, Span, Options1} =
-        init_spans(undefined, Module, Options0, {undefined, undefined, []}),
-    gen_server:start(?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
+    {ProcessSpan, Span, Inspect, Options1} =
+        init_options(undefined, Module, Options0, {undefined, undefined, false, []}),
+    gen_server:start(?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start-4">gen_server:start/4</a>.
 -spec start(server_name(), module(), term(), start_options()) -> start_result().
 start(ServerName, Module, Args, Options0) ->
-    {ProcessSpan, Span, Options1} =
-        init_spans(ServerName, Module, Options0, {undefined, undefined, []}),
-    gen_server:start(ServerName, ?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
+    {ProcessSpan, Span, Inspect, Options1} =
+        init_options(ServerName, Module, Options0, {undefined, undefined, false, []}),
+    gen_server:start(ServerName, ?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start_link-3">gen_server:start_link/3</a>.
 -spec start_link(module(), term(), start_options()) -> start_result().
 start_link(Module, Args, Options0) ->
-    {ProcessSpan, Span, Options1} =
-        init_spans(undefined, Module, Options0, {undefined, undefined, []}),
-    gen_server:start_link(?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
+    {ProcessSpan, Span, Inspect, Options1} =
+        init_options(undefined, Module, Options0, {undefined, undefined, false, []}),
+    gen_server:start_link(?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start_link-4">gen_server:start_link/4</a>.
 -spec start_link(server_name(), module(), term(), start_options()) -> start_result().
 start_link(ServerName, Module, Args, Options0) ->
-    {ProcessSpan, Span, Options1} =
-        init_spans(ServerName, Module, Options0, {undefined, undefined, []}),
-    gen_server:start_link(ServerName, ?MODULE, {ProcessSpan, Span, Module, Args}, Options1).
+    {ProcessSpan, Span, Inspect, Options1} =
+        init_options(ServerName, Module, Options0, {undefined, undefined, false, []}),
+    gen_server:start_link(ServerName, ?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
 
 %% @equiv gen_server:stop/1
 -spec stop(server_ref()) -> ok.
@@ -138,7 +140,7 @@ call(ServerRef, Request) ->
 %% The span will be handled by `{@module}:handle_call/3' transparently for the `gen_server' implementation module.
 -spec call(server_ref(), term(), timeout()) -> Reply :: term().
 call(ServerRef, Request, Timeout) ->
-    Span = passage_pd:current_span(),
+    Span = passage:strip_span(passage_pd:current_span()),
     gen_server:call(ServerRef, {Span, Request}, Timeout).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#cast-2">gen_server:cast/2</a>.
@@ -147,7 +149,7 @@ call(ServerRef, Request, Timeout) ->
 %% The span will be handled by `{@module}:handle_cast/2' transparently for the `gen_server' implementation module.
 -spec cast(server_ref(), term()) -> ok.
 cast(ServerRef, Request) ->
-    Span = passage_pd:current_span(),
+    Span = passage:strip_span(passage_pd:current_span()),
     gen_server:cast(ServerRef, {Span, Request}).
 
 %% @equiv gen_server:reply/2
@@ -169,30 +171,37 @@ process_span() ->
       Fun    :: fun (() -> Result),
       Result :: term().
 with_process_span(Fun) ->
-    passage_pd:with_parent_span(process_span(), Fun).
+    passage_pd:with_parent_span({child_of, process_span()}, Fun).
 
 %%------------------------------------------------------------------------------
 %% 'gen_server' Callback Functions
 %%------------------------------------------------------------------------------
 %% @private
-init({ProcessSpan0, undefined, Module, Args}) ->
+init({ProcessSpan0, undefined, Inspect, Module, Args}) ->
     ProcessSpan1 = passage:set_tags(ProcessSpan0, #{pid => self()}),
     passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
     save_process_span(ProcessSpan1),
 
-    App = get_application(Module),
-    Context = #?CONTEXT{application = App, module = Module},
+    Context = #?CONTEXT{module = Module, inspect = Inspect},
     do_init(Args, Context);
-init({ProcessSpan0, Span, Module, Args}) ->
+init({ProcessSpan0, Span, false, Module, Args}) ->
     ProcessSpan1 = passage:set_tags(ProcessSpan0, #{pid => self()}),
     passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
     save_process_span(ProcessSpan1),
 
-    App = get_application(Module),
-    Context = #?CONTEXT{application = App, module = Module},
+    Context = #?CONTEXT{module = Module},
+    passage_pd:with_parent_span(
+      {child_of, Span},
+      fun () -> do_init(Args, Context) end);
+init({ProcessSpan0, Span, true, Module, Args}) ->
+    ProcessSpan1 = passage:set_tags(ProcessSpan0, #{pid => self()}),
+    passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
+    save_process_span(ProcessSpan1),
+
+    Context = #?CONTEXT{module = Module, inspect = true},
     passage_pd:with_span(
       'gen_server_passage:init/1',
-      [{child_of, Span}, {tags, tags(Context)}, error_if_exception],
+      [{child_of, Span}, {tags, tags(Context)}],
       fun () ->
               Result = do_init(Args, Context),
               case Result of
@@ -216,10 +225,14 @@ handle_stop(Error) ->
 %% @private
 handle_call({undefined, Request}, From, Context) ->
     do_handle_call(Request, From, Context);
+handle_call({Span, Request}, From, Context = #?CONTEXT{inspect = false}) ->
+    passage_pd:with_parent_span(
+      {child_of, Span},
+      fun () -> do_handle_call(Request, From, Context) end);
 handle_call({Span, Request}, From, Context) ->
     passage_pd:with_span(
       'gen_server_passage:handle_call/3',
-      [{child_of, Span}, {tags, tags(Context)}, error_if_exception],
+      [{child_of, Span}, {tags, tags(Context)}],
       fun () ->
               Result = do_handle_call(Request, From, Context),
               case Result of
@@ -233,10 +246,14 @@ handle_call({Span, Request}, From, Context) ->
 %% @private
 handle_cast({undefined, Request}, Context) ->
     do_handle_cast(Request, Context);
+handle_cast({Span, Request}, Context = #?CONTEXT{inspect = false}) ->
+    passage_pd:with_parent_span(
+      {follows_from, Span},
+      fun () -> do_handle_cast(Request, Context) end);
 handle_cast({Span, Request}, Context) ->
     passage_pd:with_span(
       'gen_server_passage:handle_cast/2',
-      [{follows_from, Span}, {tags, tags(Context)}, error_if_exception],
+      [{follows_from, Span}, {tags, tags(Context)}],
       fun () ->
               Result = do_handle_cast(Request, Context),
               case Result of
@@ -264,7 +281,7 @@ terminate(Reason, Context) ->
 code_change(OldVsn, Context, Extra) ->
     passage_pd:with_span(
       'gen_server_passage:code_change/3',
-      [{child_of, process_span()}, {tags, tags(Context)}, error_if_exception],
+      [{child_of, process_span()}, {tags, tags(Context)}],
       fun () ->
               do_code_change(OldVsn, Context, Extra)
       end).
@@ -280,29 +297,17 @@ format_status(Opt, [PDict, #?CONTEXT{module = Module, state = State}]) ->
 %% Internal Functions
 %%------------------------------------------------------------------------------
 -spec tags(#?CONTEXT{}) -> passage:tags().
-tags(#?CONTEXT{application = App, module = Module}) ->
+tags(#?CONTEXT{module = Module}) ->
     #{?TAG_COMPONENT => gen_server,
-      node => node(),
-      pid => self(),
-      application => App,
-      module => Module}.
-
--spec get_application(module()) -> atom().
-get_application(Module) ->
-    case application:get_application(Module) of
-        undefined -> undefined;
-        {ok, App} -> App
-    end.
+      'location.pid' => self(),
+      'gen_server.module' => Module}.
 
 -spec do_init(term(), #?CONTEXT{}) -> term().
 do_init(Args, Context = #?CONTEXT{module = Module}) ->
     case Module:init(Args) of
-        {ok, State} ->
-            {ok, Context#?CONTEXT{state = State}};
-        {ok, State, Ext} ->
-            {ok, Context#?CONTEXT{state = State}, Ext};
-        Other ->
-            Other
+        {ok, State}      -> {ok, Context#?CONTEXT{state = State}};
+        {ok, State, Ext} -> {ok, Context#?CONTEXT{state = State}, Ext};
+        Other            -> Other
     end.
 
 -spec do_handle_call(term(), term(), #?CONTEXT{}) -> term().
@@ -330,7 +335,7 @@ do_handle_cast(Request, Context0 = #?CONTEXT{module = Module, state = State0}) -
 
 -spec do_handle_info(term(), #?CONTEXT{}) -> term().
 do_handle_info(Info, Context0 = #?CONTEXT{module = Module, state = State0}) ->
-    Result = Module:handle_ifo(Info, State0),
+    Result = Module:handle_info(Info, State0),
     StateIndex =
         case element(1, Result) of
             noreply -> 2;
@@ -350,26 +355,26 @@ do_code_change(OldVsn, Context = #?CONTEXT{module = Module, state = State0}, Ext
         {error, Reason} -> {error, Reason}
     end.
 
--spec init_spans(term(), module(), start_options(), Acc) -> Result when
-      Acc    :: {passage:maybe_span(), passage:maybe_span(), list()},
+-spec init_options(term(), module(), start_options(), Acc) -> Result when
+      Acc    :: {passage:maybe_span(), passage:maybe_span(), boolean(), list()},
       Result :: Acc.
-init_spans(_, _, [], Acc) ->
+init_options(_, _, [], Acc) ->
     Acc;
-init_spans(Name, Module, [{span, Span} | Options], Acc) ->
-    init_spans(Name, Module, Options, setelement(2, Acc, Span));
-init_spans(Name, Module, [{trace_process_lifecycle, StartSpanOptions} | Options], Acc) ->
+init_options(Name, Module, [{span, Span} | Options], Acc) ->
+    init_options(Name, Module, Options, setelement(2, Acc, Span));
+init_options(Name, Module, [{trace_process_lifecycle, StartSpanOptions} | Options], Acc) ->
     ProcessSpan0 = passage:start_span(trace_process_lifecycle, StartSpanOptions),
     ProcessSpan1 =
         passage:set_tags(
           ProcessSpan0,
           #{?TAG_COMPONENT => gen_server,
-            process_name => Name,
-            node => node(),
-            application => get_application(Module),
-            module => Module}),
-    init_spans(Name, Module, Options, setelement(1, Acc, ProcessSpan1));
-init_spans(Name, Module, [O | Options], Acc = {_, _, Os}) ->
-    init_spans(Name, Module, Options, setelement(3, Acc, [O | Os])).
+            'gen_server.name' => Name,
+            'gen_server.module'=> Module}),
+    init_options(Name, Module, Options, setelement(1, Acc, ProcessSpan1));
+init_options(Name, Module, [{inspect, V} | Options], Acc) ->
+    init_options(Name, Module, Options, setelement(3, Acc, V));
+init_options(Name, Module, [O | Options], Acc = {_, _, _, Os}) ->
+    init_options(Name, Module, Options, setelement(4, Acc, [O | Os])).
 
 -spec save_process_span(passage:maybe_span()) -> ok.
 save_process_span(Span) ->
