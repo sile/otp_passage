@@ -1,6 +1,6 @@
 {application,otp_passage,
              [{description,"OpenTracing instrumentation library for the Erlang/OTP behaviours"},
-              {vsn,"0.1.1"},
+              {vsn,"0.1.2"},
               {registered,[]},
               {applications,[kernel,stdlib,passage]},
               {env,[]},
