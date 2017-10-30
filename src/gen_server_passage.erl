@@ -95,28 +95,28 @@
 -spec start(module(), term(), start_options()) -> start_result().
 start(Module, Args, Options0) ->
     {ProcessSpan, Span, Inspect, Options1} =
-        init_options(undefined, Module, Options0, {undefined, undefined, false, []}),
+        init_options(undefined, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
     gen_server:start(?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start-4">gen_server:start/4</a>.
 -spec start(server_name(), module(), term(), start_options()) -> start_result().
 start(ServerName, Module, Args, Options0) ->
     {ProcessSpan, Span, Inspect, Options1} =
-        init_options(ServerName, Module, Options0, {undefined, undefined, false, []}),
+        init_options(ServerName, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
     gen_server:start(ServerName, ?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start_link-3">gen_server:start_link/3</a>.
 -spec start_link(module(), term(), start_options()) -> start_result().
 start_link(Module, Args, Options0) ->
     {ProcessSpan, Span, Inspect, Options1} =
-        init_options(undefined, Module, Options0, {undefined, undefined, false, []}),
+        init_options(undefined, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
     gen_server:start_link(?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start_link-4">gen_server:start_link/4</a>.
 -spec start_link(server_name(), module(), term(), start_options()) -> start_result().
 start_link(ServerName, Module, Args, Options0) ->
     {ProcessSpan, Span, Inspect, Options1} =
-        init_options(ServerName, Module, Options0, {undefined, undefined, false, []}),
+        init_options(ServerName, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
     gen_server:start_link(ServerName, ?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
 
 %% @equiv gen_server:stop/1
