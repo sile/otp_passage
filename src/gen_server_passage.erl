@@ -96,28 +96,28 @@
 start(Module, Args, Options0) ->
     {ProcessSpan, Span, Inspect, Options1} =
         init_options(undefined, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
-    gen_server:start(?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
+    gen_server:start(?MODULE, {Module, Args, ProcessSpan, Span, Inspect}, Options1).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start-4">gen_server:start/4</a>.
 -spec start(server_name(), module(), term(), start_options()) -> start_result().
 start(ServerName, Module, Args, Options0) ->
     {ProcessSpan, Span, Inspect, Options1} =
         init_options(ServerName, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
-    gen_server:start(ServerName, ?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
+    gen_server:start(ServerName, ?MODULE, {Module, Args, ProcessSpan, Span, Inspect}, Options1).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start_link-3">gen_server:start_link/3</a>.
 -spec start_link(module(), term(), start_options()) -> start_result().
 start_link(Module, Args, Options0) ->
     {ProcessSpan, Span, Inspect, Options1} =
         init_options(undefined, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
-    gen_server:start_link(?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
+    gen_server:start_link(?MODULE, {Module, Args, ProcessSpan, Span, Inspect}, Options1).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start_link-4">gen_server:start_link/4</a>.
 -spec start_link(server_name(), module(), term(), start_options()) -> start_result().
 start_link(ServerName, Module, Args, Options0) ->
     {ProcessSpan, Span, Inspect, Options1} =
         init_options(ServerName, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
-    gen_server:start_link(ServerName, ?MODULE, {ProcessSpan, Span, Inspect, Module, Args}, Options1).
+    gen_server:start_link(ServerName, ?MODULE, {Module, Args, ProcessSpan, Span, Inspect}, Options1).
 
 %% @equiv gen_server:stop/1
 -spec stop(server_ref()) -> ok.
@@ -141,7 +141,7 @@ call(ServerRef, Request) ->
 -spec call(server_ref(), term(), timeout()) -> Reply :: term().
 call(ServerRef, Request, Timeout) ->
     Span = passage:strip_span(passage_pd:current_span()),
-    gen_server:call(ServerRef, {Span, Request}, Timeout).
+    gen_server:call(ServerRef, {Request, Span}, Timeout).
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#cast-2">gen_server:cast/2</a>.
 %%
@@ -150,7 +150,7 @@ call(ServerRef, Request, Timeout) ->
 -spec cast(server_ref(), term()) -> ok.
 cast(ServerRef, Request) ->
     Span = passage:strip_span(passage_pd:current_span()),
-    gen_server:cast(ServerRef, {Span, Request}).
+    gen_server:cast(ServerRef, {Request, Span}).
 
 %% @equiv gen_server:reply/2
 -spec reply(term(), term()) -> term().
@@ -177,14 +177,14 @@ with_process_span(Fun) ->
 %% 'gen_server' Callback Functions
 %%------------------------------------------------------------------------------
 %% @private
-init({ProcessSpan0, undefined, Inspect, Module, Args}) ->
+init({Module, Args, ProcessSpan0, undefined, Inspect}) ->
     ProcessSpan1 = passage:set_tags(ProcessSpan0, #{pid => self()}),
     passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
     save_process_span(ProcessSpan1),
 
     Context = #?CONTEXT{module = Module, inspect = Inspect},
     do_init(Args, Context);
-init({ProcessSpan0, Span, false, Module, Args}) ->
+init({Module, Args, ProcessSpan0, Span, false}) ->
     ProcessSpan1 = passage:set_tags(ProcessSpan0, #{pid => self()}),
     passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
     save_process_span(ProcessSpan1),
@@ -193,7 +193,7 @@ init({ProcessSpan0, Span, false, Module, Args}) ->
     passage_pd:with_parent_span(
       {child_of, Span},
       fun () -> do_init(Args, Context) end);
-init({ProcessSpan0, Span, true, Module, Args}) ->
+init({Module, Args, ProcessSpan0, Span, true}) ->
     ProcessSpan1 = passage:set_tags(ProcessSpan0, #{pid => self()}),
     passage:finish_span(ProcessSpan1, [{lifetime, self()}]),
     save_process_span(ProcessSpan1),
@@ -223,13 +223,13 @@ handle_stop(Error) ->
     passage_pd:log(#{?LOG_FIELD_MESSAGE => Error}, [error]).
 
 %% @private
-handle_call({undefined, Request}, From, Context) ->
+handle_call({Request, undefined}, From, Context) ->
     do_handle_call(Request, From, Context);
-handle_call({Span, Request}, From, Context = #?CONTEXT{inspect = false}) ->
+handle_call({Request, Span}, From, Context = #?CONTEXT{inspect = false}) ->
     passage_pd:with_parent_span(
       {child_of, Span},
       fun () -> do_handle_call(Request, From, Context) end);
-handle_call({Span, Request}, From, Context) ->
+handle_call({Request, Span}, From, Context) ->
     passage_pd:with_span(
       'gen_server_passage:handle_call/3',
       [{child_of, Span}, {tags, tags(Context)}],
@@ -244,13 +244,13 @@ handle_call({Span, Request}, From, Context) ->
       end).
 
 %% @private
-handle_cast({undefined, Request}, Context) ->
+handle_cast({Request, undefined}, Context) ->
     do_handle_cast(Request, Context);
-handle_cast({Span, Request}, Context = #?CONTEXT{inspect = false}) ->
+handle_cast({Request, Span}, Context = #?CONTEXT{inspect = false}) ->
     passage_pd:with_parent_span(
       {follows_from, Span},
       fun () -> do_handle_cast(Request, Context) end);
-handle_cast({Span, Request}, Context) ->
+handle_cast({Request, Span}, Context) ->
     passage_pd:with_span(
       'gen_server_passage:handle_cast/2',
       [{follows_from, Span}, {tags, tags(Context)}],
