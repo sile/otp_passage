@@ -6,7 +6,7 @@ otp_passage
 [![Code Coverage](https://codecov.io/gh/sile/otp_passage/branch/master/graph/badge.svg)](https://codecov.io/gh/sile/otp_passage/branch/master)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[OpenTracing](http://opentracing.io/) instrumentation library for the Erlang/OTP behaviours.
+[OpenTracing](http://opentracing.io/) instrumentation library for the Erlang/OTP standard modules.
 
 This uses [passage](https://github.com/sile/passage) as OpenTracing API library.
 
