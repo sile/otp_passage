@@ -17,6 +17,8 @@
 -export([stop/1, stop/3]).
 -export([call/2, call/3]).
 -export([cast/2]).
+-export([safe_call/3, safe_call/4]).
+-export([safe_cast/3]).
 -export([reply/2]).
 -export([process_span/0]).
 -export([with_process_span/1]).
@@ -36,6 +38,7 @@
 %% Macros & Records
 %%------------------------------------------------------------------------------
 -define(PROCESS_SPAN_KEY, gen_server_passage_process_span).
+-define(SPAN_TAG, 'WithSpan').
 
 -define(CONTEXT, ?MODULE).
 
@@ -94,6 +97,7 @@
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start-3">gen_server:start/3</a>.
 -spec start(module(), term(), start_options()) -> start_result().
 start(Module, Args, Options0) ->
+    ok = otp_passage_capability_table:register_capable_server(Module),
     {ProcessSpan, Span, Inspect, Options1} =
         init_options(undefined, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
     gen_server:start(?MODULE, {Module, Args, ProcessSpan, Span, Inspect}, Options1).
@@ -101,6 +105,7 @@ start(Module, Args, Options0) ->
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start-4">gen_server:start/4</a>.
 -spec start(server_name(), module(), term(), start_options()) -> start_result().
 start(ServerName, Module, Args, Options0) ->
+    ok = otp_passage_capability_table:register_capable_server(Module),
     {ProcessSpan, Span, Inspect, Options1} =
         init_options(ServerName, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
     gen_server:start(ServerName, ?MODULE, {Module, Args, ProcessSpan, Span, Inspect}, Options1).
@@ -108,6 +113,7 @@ start(ServerName, Module, Args, Options0) ->
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start_link-3">gen_server:start_link/3</a>.
 -spec start_link(module(), term(), start_options()) -> start_result().
 start_link(Module, Args, Options0) ->
+    ok = otp_passage_capability_table:register_capable_server(Module),
     {ProcessSpan, Span, Inspect, Options1} =
         init_options(undefined, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
     gen_server:start_link(?MODULE, {Module, Args, ProcessSpan, Span, Inspect}, Options1).
@@ -115,6 +121,7 @@ start_link(Module, Args, Options0) ->
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#start_link-4">gen_server:start_link/4</a>.
 -spec start_link(server_name(), module(), term(), start_options()) -> start_result().
 start_link(ServerName, Module, Args, Options0) ->
+    ok = otp_passage_capability_table:register_capable_server(Module),
     {ProcessSpan, Span, Inspect, Options1} =
         init_options(ServerName, Module, Options0, {undefined, passage_pd:current_span(), false, []}),
     gen_server:start_link(ServerName, ?MODULE, {Module, Args, ProcessSpan, Span, Inspect}, Options1).
@@ -129,7 +136,7 @@ stop(ServerRef) ->
 stop(ServerRef, Reason, Timeout) ->
     gen_server:stop(ServerRef, Reason, Timeout).
 
-%% @equiv Call(Name, Request, 5000)
+%% @equiv call(ServerRef, Request, 5000)
 -spec call(server_ref(), term()) -> Reply :: term().
 call(ServerRef, Request) ->
     call(ServerRef, Request, 5000).
@@ -138,19 +145,64 @@ call(ServerRef, Request) ->
 %%
 %% This piggybacks the current span which retrieved by {@link passage_pd:current_span/1} when sending `Request' to `ServerRef'.
 %% The span will be handled by `{@module}:handle_call/3' transparently for the `gen_server' implementation module.
+%%
+%% Note that it is prefered to use {@link safe_call/4} in a distributed environment where multiple nodes constitute an erlang cluster.
 -spec call(server_ref(), term(), timeout()) -> Reply :: term().
 call(ServerRef, Request, Timeout) ->
-    Span = passage:strip_span(passage_pd:current_span()),
-    gen_server:call(ServerRef, {Request, Span}, Timeout).
+    case passage:strip_span(passage_pd:current_span()) of
+        undefined -> gen_server:call(ServerRef, Request, Timeout);
+        Span      -> gen_server:call(ServerRef, {Request, ?SPAN_TAG, Span}, Timeout)
+    end.
+
+%% @equiv safe_call(Module, ServerRef, Request, 500)
+-spec safe_call(module(), server_ref(), term()) -> Reply :: term().
+safe_call(CallbackModule, ServerRef, Request) ->
+    safe_call(CallbackModule, ServerRef, Request, 5000).
+
+%% @doc A variant of {@link call/3} that is safe even in a multiple nodes environment.
+%%
+%% This function checks if the server process for `CallbackModule' in `Node'
+%% has the capability to handle tracing.
+%% If it has no capability,
+%% this will switch to the ordinary `gen_server:call/3' function internally.
+%%
+%% The checking result is cached in the local ETS.
+%% So normally, the cost between {@link call/3} and {@link safe_call/4} is negligible.
+-spec safe_call(module(), server_ref(), term(), timeout()) -> Reply :: term().
+safe_call(CallbackModule, ServerRef, Request, Timeout) ->
+    case is_capable_server(ServerRef, CallbackModule) of
+        false -> gen_server:call(ServerRef, Request, Timeout);
+        true  -> call(ServerRef, Request, Timeout)
+    end.
 
 %% @doc Traceable variant of <a href="http://erlang.org/doc/man/gen_server.html#cast-2">gen_server:cast/2</a>.
 %%
 %% This piggybacks the current span which retrieved by {@link passage_pd:current_span/1} when sending `Request' to `ServerRef'.
 %% The span will be handled by `{@module}:handle_cast/2' transparently for the `gen_server' implementation module.
+%%
+%% Note that it is prefered to use {@link safe_cast/3} in a distributed environment where multiple nodes constitute an erlang cluster.
 -spec cast(server_ref(), term()) -> ok.
 cast(ServerRef, Request) ->
-    Span = passage:strip_span(passage_pd:current_span()),
-    gen_server:cast(ServerRef, {Request, Span}).
+    case passage:strip_span(passage_pd:current_span()) of
+        undefined -> gen_server:cast(ServerRef, Request);
+        Span      -> gen_server:cast(ServerRef, {Request, ?SPAN_TAG, Span})
+    end.
+
+%% @doc A variant of {@link call/3} that is safe even in a multiple nodes environment.
+%%
+%% This function checks if the server process for `CallbackModule' in `Node'
+%% has the capability to handle tracing.
+%% If it has no capability,
+%% this will switch to the ordinary `gen_server:cast/2' function internally.
+%%
+%% The checking result is cached in the local ETS.
+%% So normally, the cost between {@link cast/2} and {@link safe_cast/3} is negligible.
+-spec safe_cast(module(), server_ref(), term()) -> ok.
+safe_cast(CallbackModule, ServerRef, Request) ->
+    case is_capable_server(ServerRef, CallbackModule) of
+        false -> gen_server:cast(ServerRef, Request);
+        true  -> cast(ServerRef, Request)
+    end.
 
 %% @equiv gen_server:reply/2
 -spec reply(term(), term()) -> term().
@@ -223,13 +275,11 @@ handle_stop(Error) ->
     passage_pd:log(#{?LOG_FIELD_MESSAGE => Error}, [error]).
 
 %% @private
-handle_call({Request, undefined}, From, Context) ->
-    do_handle_call(Request, From, Context);
-handle_call({Request, Span}, From, Context = #?CONTEXT{inspect = false}) ->
+handle_call({Request, ?SPAN_TAG, Span}, From, Context = #?CONTEXT{inspect = false}) ->
     passage_pd:with_parent_span(
       {child_of, Span},
       fun () -> do_handle_call(Request, From, Context) end);
-handle_call({Request, Span}, From, Context) ->
+handle_call({Request, ?SPAN_TAG, Span}, From, Context) ->
     passage_pd:with_span(
       'gen_server_passage:handle_call/3',
       [{child_of, Span}, {tags, tags(Context)}],
@@ -241,16 +291,16 @@ handle_call({Request, Span}, From, Context) ->
                   _                    -> ok
               end,
               Result
-      end).
+      end);
+handle_call(Request, From, Context) ->
+    do_handle_call(Request, From, Context).
 
 %% @private
-handle_cast({Request, undefined}, Context) ->
-    do_handle_cast(Request, Context);
-handle_cast({Request, Span}, Context = #?CONTEXT{inspect = false}) ->
+handle_cast({Request, ?SPAN_TAG, Span}, Context = #?CONTEXT{inspect = false}) ->
     passage_pd:with_parent_span(
       {follows_from, Span},
       fun () -> do_handle_cast(Request, Context) end);
-handle_cast({Request, Span}, Context) ->
+handle_cast({Request, ?SPAN_TAG, Span}, Context) ->
     passage_pd:with_span(
       'gen_server_passage:handle_cast/2',
       [{follows_from, Span}, {tags, tags(Context)}],
@@ -261,7 +311,9 @@ handle_cast({Request, Span}, Context) ->
                   _                 -> ok
               end,
               Result
-      end).
+      end);
+handle_cast(Request, Context) ->
+    do_handle_cast(Request, Context).
 
 %% @private
 handle_info(Info, Context) ->
@@ -380,3 +432,28 @@ init_options(Name, Module, [O | Options], Acc = {_, _, _, Os}) ->
 save_process_span(Span) ->
     put(?PROCESS_SPAN_KEY, passage:strip_span(Span)),
     ok.
+
+-spec is_capable_server(server_ref(), module()) -> boolean().
+is_capable_server(ServerRef, Module) ->
+    case server_node(ServerRef) of
+        undefined -> false;
+        Node      -> otp_passage_capability_table:is_capable_server(Node, Module)
+    end.
+
+-spec server_node(server_ref()) -> node().
+server_node(Pid) when is_pid(Pid) ->
+    node(Pid);
+server_node({_Name, Node}) ->
+    Node;
+server_node(Name) when is_atom(Name) ->
+    node();
+server_node({global, Name}) ->
+    case global:whereis_name(Name) of
+        undefined -> undefined;
+        Pid       -> node(Pid)
+    end;
+server_node({via, Module, Name}) ->
+    case catch Module:whereis_name(Name) of
+        Pid when is_pid(Pid) -> node(Pid);
+        _                    -> undefined
+    end.

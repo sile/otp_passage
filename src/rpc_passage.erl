@@ -22,23 +22,36 @@
 %%
 %% The propagated span is saved in the process dictionary of the RPC executing process.
 %% So the functions of {@link passage_pd} module can be used in the process.
+%%
+%% If `Node' has no capability to handle tracing,
+%% this will switch to the ordinary `rpc:call/4' function internally.
 -spec call(node(), module(), atom(), [term()]) -> Res | {badrpc, Reason} when
       Res :: term(),
       Reason :: term().
 call(Node, Module, Function, Args) ->
     Span = passage_pd:current_span(),
-    rpc:call(Node, ?MODULE, call_trampoline, [Span, Module, Function, Args]).
+    case otp_passage_capability_table:is_capable_node(Node) of
+        true  -> rpc:call(Node, ?MODULE, call_trampoline, [Span, Module, Function, Args]);
+        false -> rpc:call(Node, Module, Function, Args)
+    end.
 
 %% @doc The same as <a href="http://erlang.org/doc/man/rpc.html#call-5">rpc:call/5</a> except for propagating the current span to the spawned process.
 %%
 %% The propagated span is saved in the process dictionary of the RPC executing process.
 %% So the functions of {@link passage_pd} module can be used in the process.
+%%
+%% If `Node' has no capability to handle tracing,
+%% this will switch to the ordinary `rpc:call/5' function internally.
 -spec call(node(), module(), atom(), [term()], timeout()) -> Res | {badrpc, Reason} when
       Res :: term(),
       Reason :: term().
 call(Node, Module, Function, Args, Timeout) ->
     Span = passage_pd:current_span(),
-    rpc:call(Node, ?MODULE, call_trampoline, [Span, Module, Function, Args], Timeout).
+    case otp_passage_capability_table:is_capable_node(Node) of
+        true  -> rpc:call(Node, ?MODULE, call_trampoline, [Span, Module, Function, Args],
+                          Timeout);
+        false -> rpc:call(Node, Module, Function, Args, Timeout)
+    end.
 
 %%------------------------------------------------------------------------------
 %% Application Internal Function

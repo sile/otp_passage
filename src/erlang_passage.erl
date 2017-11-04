@@ -98,13 +98,19 @@ spawn_opt(Fun, Options) ->
 %%
 %% The propagated span is saved in the process dictionary of the spawned process.
 %% So the functions of {@link passage_pd} module can be used in the process.
+%%
+%% If `Node' has no capability to handle tracing,
+%% this will switch to the ordinary `erlang:spawn_opt/3' function internally.
 -spec spawn_opt(node(), function(), spawn_options()) -> pid() | {pid(), reference()}.
 spawn_opt(Node, Fun, Options) ->
     RefType = proplists:get_value(span_reference_type, Options, follows_from),
     Span = proplists:get_value(span, Options, passage_pd:current_span()),
-    erlang:spawn_opt(Node,
-                     fun () -> passage_pd:with_parent_span({RefType, Span}, Fun) end,
-                     Options).
+    SpawnFun =
+        case otp_passage_capability_table:is_capable_node(Node) of
+            true  -> fun () -> passage_pd:with_parent_span({RefType, Span}, Fun) end;
+            false -> Fun
+        end,
+    erlang:spawn_opt(Node, SpawnFun, Options).
 
 %% @equiv spawn_opt(fun () -> apply(Module, Function, Args) end, Options)
 -spec spawn_opt(module(), atom(), [term()], spawn_options()) -> pid() | {pid(), reference()}.

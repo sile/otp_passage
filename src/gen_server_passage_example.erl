@@ -23,7 +23,7 @@
 %% Exported API
 %%------------------------------------------------------------------------------
 -export([start_link/0]).
--export([ping/0]).
+-export([ping/0, safe_ping/0]).
 
 %%------------------------------------------------------------------------------
 %% 'gen_server' Callback API
@@ -44,6 +44,11 @@ start_link() ->
 -spec ping() -> pong.
 ping() ->
     gen_server_passage:call(?MODULE, ping).
+
+-passage_trace([{tracer, example_tracer}]).
+-spec safe_ping() -> pong.
+safe_ping() ->
+    gen_server_passage:safe_call(?MODULE, ?MODULE, ping).
 
 %%------------------------------------------------------------------------------
 %% 'gen_server' Callback API
