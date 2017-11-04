@@ -19,6 +19,9 @@ basic_test_() ->
               pong = gen_server_passage_example:ping(),
               ?assertMatch([_, _, _], finished_spans()),
 
+              pong = gen_server_passage_example:safe_ping(),
+              ?assertMatch([_, _, _], finished_spans()),
+
               exit(Pid, kill),
               monitor(process, Pid),
               receive {'DOWN', _, _, Pid, _} -> ok end,

@@ -17,8 +17,18 @@ basic_test_() ->
                 fun () ->
                         erlang_passage:spawn(
                           fun () ->
-                        passage_pd:with_span(child, fun () -> ok end)
+                                  passage_pd:with_span(child, fun () -> ok end)
                           end)
+                end),
+              timer:sleep(10),
+              ?assertMatch([_, _], finished_spans())
+      end,
+      fun () ->
+              ok = start_tracer(example_tracer),
+              passage_pd:with_span(
+                root, [{tracer, example_tracer}],
+                fun () ->
+                        erlang_passage:spawn_opt(fun () -> ok end, [{start_span, child}])
                 end),
               timer:sleep(10),
               ?assertMatch([_, _], finished_spans())

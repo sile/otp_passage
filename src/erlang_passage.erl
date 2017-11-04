@@ -23,10 +23,14 @@
 
 -type spawn_option() :: {span, passage:maybe_span()}
                       | {span_reference_type, passage:ref_type()}
+                      | {start_span, passage:operation_name()}
+                      | {start_span_options, passage:start_span_options()}
                       | (ErlangSpawnOption :: term()).
 %% <ul>
 %%   <li>`span': The current span. This is used as the parent span of the spawned process. The default value is `passage:maybe_span()'.</li>
 %%   <li>`span_reference_type': The span reference type between the current span and the span of the spawned process. The default value is `follows_from'.</li>
+%%   <li>`start_span': If this option presents, a new span will be automatically started in the spawned process.</li>
+%%   <li>`start_span_options': Options for the starting span in the spawned process. If `start_span' option is absent, this will be ignored. The default value is `[]'.</li>
 %%   <li>`ErlangSpawnOption': Other options defined in `erlang' module. See the description of <a href="http://erlang.org/doc/man/erlang.html#spawn_opt-4">erlang:spawn_opt/4</a> for more details.</li>
 %% </ul>
 
@@ -89,22 +93,24 @@ spawn_monitor(Module, Function, Args) ->
 %% So the functions of {@link passage_pd} module can be used in the process.
 -spec spawn_opt(function(), spawn_options()) -> pid() | {pid(), reference()}.
 spawn_opt(Fun, Options) ->
-    RefType = proplists:get_value(span_reference_type, Options, follows_from),
-    Span = proplists:get_value(span, Options, passage_pd:current_span()),
-    erlang:spawn_opt(fun () -> passage_pd:with_parent_span({RefType, Span}, Fun) end,
-                     Options).
+    SpawnFun = make_spawn_fun(Fun, Options),
+    erlang:spawn_opt(SpawnFun, remove_passage_options(Options)).
 
 %% @doc The same as <a href="http://erlang.org/doc/man/erlang.html#spawn_opt-3">erlang:spawn_opt/3</a> except for propagating the current span to the spawned process.
 %%
 %% The propagated span is saved in the process dictionary of the spawned process.
 %% So the functions of {@link passage_pd} module can be used in the process.
+%%
+%% If `Node' has no capability to handle tracing,
+%% this will switch to the ordinary `erlang:spawn_opt/3' function internally.
 -spec spawn_opt(node(), function(), spawn_options()) -> pid() | {pid(), reference()}.
 spawn_opt(Node, Fun, Options) ->
-    RefType = proplists:get_value(span_reference_type, Options, follows_from),
-    Span = proplists:get_value(span, Options, passage_pd:current_span()),
-    erlang:spawn_opt(Node,
-                     fun () -> passage_pd:with_parent_span({RefType, Span}, Fun) end,
-                     Options).
+    SpawnFun =
+        case otp_passage_capability_table:is_capable_node(Node) of
+            false -> Fun;
+            true  -> make_spawn_fun(Fun, Options)
+        end,
+    erlang:spawn_opt(Node, SpawnFun, remove_passage_options(Options)).
 
 %% @equiv spawn_opt(fun () -> apply(Module, Function, Args) end, Options)
 -spec spawn_opt(module(), atom(), [term()], spawn_options()) -> pid() | {pid(), reference()}.
@@ -116,3 +122,35 @@ spawn_opt(Module, Function, Args, Options) ->
                        pid() | {pid(), reference()}.
 spawn_opt(Node, Module, Function, Args, Options) ->
     ?MODULE:spawn_opt(Node, fun () -> apply(Module, Function, Args) end, Options).
+
+%%------------------------------------------------------------------------------
+%% Internal Functions
+%%------------------------------------------------------------------------------
+-spec make_spawn_fun(function(), spawn_options()) -> function().
+make_spawn_fun(Fun, Options) ->
+    RefType = proplists:get_value(span_reference_type, Options, follows_from),
+    Span = proplists:get_value(span, Options, passage_pd:current_span()),
+    case lists:keyfind(start_span, 1, Options) of
+        false ->
+            fun () ->
+                    passage_pd:with_parent_span({RefType, Span}, Fun)
+            end;
+        {_, OperationName} ->
+            StartSpanOptions = proplists:get_value(start_span_options, Options, []),
+            fun () ->
+                    passage_pd:with_span(
+                      OperationName,
+                      [{RefType, Span} | StartSpanOptions],
+                      Fun)
+            end
+    end.
+
+-spec remove_passage_options(spawn_options()) -> list().
+remove_passage_options(Options) ->
+    lists:filter(fun ({span, _})                -> false;
+                     ({span_reference_type, _}) -> false;
+                     ({start_span, _})          -> false;
+                     ({start_span_options, _})  -> false;
+                     (_)                        -> true
+                 end,
+                 Options).
