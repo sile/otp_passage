@@ -135,10 +135,7 @@ handle_nodedown(Node, State0) ->
 
 -spec handle_register_capable_server(module(), #?STATE{}) -> {noreply, #?STATE{}}.
 handle_register_capable_server(Module, State) ->
-    Servers0 = maps:get(node(), State#?STATE.node_to_servers, #{}),
-    Servers1 = maps:put(node(), Module, Servers0),
-    ets:insert(?TABLE, {{gen_server, node(), Module}, true}),
-    {noreply, State#?STATE{node_to_servers = Servers1}}.
+    {noreply, add_server(node(), Module, true, State)}.
 
 -spec handle_is_capable_server(node(), module(), #?STATE{}) -> {reply, boolean(), #?STATE{}}.
 handle_is_capable_server(Node, Module, State) ->
@@ -153,6 +150,11 @@ handle_is_capable_server(Node, Module, State) ->
                   [?MODULE, ?LINE, Node, Module, Error]),
                 false
         end,
-    ets:insert(?TABLE, {{gen_server, Node, Module}, IsCapable}),
-    Servers = maps:put(Node, Module, State#?STATE.node_to_servers),
-    {reply, IsCapable, State#?STATE{node_to_servers = Servers}}.
+    {reply, IsCapable, add_server(Node, Module, IsCapable, State)}.
+
+-spec add_server(node(), module(), boolean(), #?STATE{}) -> #?STATE{}.
+add_server(Node, ServerModule, IsCapable, State) ->
+    Modules = maps:get(Node, State#?STATE.node_to_servers, []),
+    Nodes = maps:put(Node, [ServerModule | Modules], State#?STATE.node_to_servers),
+    ets:insert(?TABLE, {{gen_server, Node, ServerModule}, IsCapable}),
+    State#?STATE{node_to_servers = Nodes}.
