@@ -40,12 +40,12 @@ start_link() ->
       [{inspect, true},
        {trace_process_lifecycle, [{tracer, example_tracer}]}]).
 
--passage_trace([{tracer, example_tracer}]).
+-passage_trace([{tracer, "example_tracer"}]).
 -spec ping() -> pong.
 ping() ->
     gen_server_passage:call(?MODULE, ping).
 
--passage_trace([{tracer, example_tracer}]).
+-passage_trace([{tracer, "example_tracer"}]).
 -spec safe_ping() -> pong.
 safe_ping() ->
     gen_server_passage:safe_call(?MODULE, ?MODULE, ping).
