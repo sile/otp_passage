@@ -1,6 +1,6 @@
 {"1.1.0",
-[{<<"passage">>,{pkg,<<"passage">>,<<"0.2.3">>},0}]}.
+[{<<"passage">>,{pkg,<<"passage">>,<<"0.2.4">>},0}]}.
 [
 {pkg_hash,[
- {<<"passage">>, <<"62A3F7E979F488B697923E7190E9AF7893B2FE2985B5C51594EE1CDFC764F7CC">>}]}
+ {<<"passage">>, <<"C3E0F34742C54DAA174167666BF6924768A417D68FBB736B91EEAA2A5F269735">>}]}
 ].
