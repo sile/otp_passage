@@ -87,7 +87,11 @@ handle_cast(_Request, State) ->
 %% @private
 handle_info({nodeup, Node}, State) ->
     handle_nodeup(Node, State);
+handle_info({nodeup, Node, _}, State) ->
+    handle_nodeup(Node, State);
 handle_info({nodedown, Node}, State) ->
+    handle_nodedown(Node, State);
+handle_info({nodedown, Node, _}, State) ->
     handle_nodedown(Node, State);
 handle_info(_Info, State) ->
     {noreply, State}.
