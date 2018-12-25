@@ -3,7 +3,7 @@ IsRebar3 = erlang:function_exported(rebar3, main, 1),
 
 Rebar2Deps =
   [
-   {passage, ".*", {git, "https://github.com/sile/passage.git", {tag, "0.2.4"}}}
+   {passage, ".*", {git, "https://github.com/sile/passage.git", {tag, "0.2.6"}}}
   ],
 
 case IsRebar3 of
